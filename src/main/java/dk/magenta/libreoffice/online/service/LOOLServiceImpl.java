@@ -106,7 +106,7 @@ public class LOOLServiceImpl implements LOOLService {
         final String userName = AuthenticationUtil.getRunAsUser();
         final Date now = new Date();
         final Date newExpiresAt = new Date(now.getTime() + TOKEN_TTL_MS);
-        Map<String, WOPIAccessTokenInfo> tokenInfoMap = fileIdAccessTokenMap.get(fileId);
+        Map<String, WOPIAccessTokenInfo> tokenInfoMap = this.fileIdAccessTokenMap.get(fileId);
 
         WOPIAccessTokenInfo tokenInfo = null;
         if (tokenInfoMap != null) {
@@ -131,7 +131,7 @@ public class LOOLServiceImpl implements LOOLService {
         }
 
         // put the tokenInfoMap back to the shared cache, so other servers can see changes
-        fileIdAccessTokenMap.put(fileId, tokenInfoMap);
+        this.fileIdAccessTokenMap.put(fileId, tokenInfoMap);
 
         if (logger.isDebugEnabled()) {
             logger.debug("Created Access Token for user '" + userName + "' and fileId '" + fileId + "'");
@@ -159,31 +159,30 @@ public class LOOLServiceImpl implements LOOLService {
      */
     @Override
     public WOPIAccessTokenInfo getAccessToken(String accessToken, String fileId) {
-        final Map<String, WOPIAccessTokenInfo> tokenInfoMap = fileIdAccessTokenMap.get(fileId);
+        final Map<String, WOPIAccessTokenInfo> tokenInfoMap = this.fileIdAccessTokenMap.get(fileId);
 
-        if (tokenInfoMap != null) {
-            WOPIAccessTokenInfo tokenInfo = null;
-            // Find the token in the map values. Note that we don't know the
-            // username for the token at this point, so we can't just do a
-            // simple key lookup.
-            for (WOPIAccessTokenInfo t : tokenInfoMap.values()) {
-                if (t.getAccessToken().equals(accessToken)) {
-                    tokenInfo = t;
-                    break;
-                }
-            }
-            if (tokenInfo != null) {
-                // Found the access token for the given file id.
-                return tokenInfo;
-            } else {
-                // Tokens exist for this file id, but given access token is
-                // not one of them.
-                return null;
-            }
-        } else {
-            // No tokens found for this file id.
+        if (tokenInfoMap == null) {
+            logger.warn("No token access found for " + fileId);
             return null;
         }
+
+        WOPIAccessTokenInfo tokenInfo = null;
+        // Find the token in the map values. Note that we don't know the
+        // username for the token at this point, so we can't just do a
+        // simple key lookup.
+        for (WOPIAccessTokenInfo t : tokenInfoMap.values()) {
+            if (t.getAccessToken().equals(accessToken)) {
+                tokenInfo = t;
+                break;
+            }
+        }
+
+        if (tokenInfo == null) {
+            logger.warn("Tokens exist for " + fileId + ", but not for the given access token");
+        }
+
+        // Found the access token for the given file id.
+        return tokenInfo;
     }
 
     /**
@@ -211,8 +210,11 @@ public class LOOLServiceImpl implements LOOLService {
         final String accessToken = req.getParameter(WOPITokenService.ACCESS_TOKEN);
         final WOPIAccessTokenInfo tokenInfo = getAccessToken(accessToken, fileId);
         // Check access token
-        if (accessToken == null || tokenInfo == null || !tokenInfo.isValid()) {
-            throw new WebScriptException(Status.STATUS_UNAUTHORIZED, "Access token invalid or expired");
+        if (accessToken == null || tokenInfo == null) {
+            throw new WebScriptException(Status.STATUS_UNAUTHORIZED, "Access token invalid");
+        }
+        if (!tokenInfo.isValid()) {
+            throw new WebScriptException(Status.STATUS_UNAUTHORIZED, "Access token expired");
         }
 
         AuthenticationUtil.setRunAsUser(tokenInfo.getUserName());
