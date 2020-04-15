@@ -54,6 +54,10 @@ After you've done that you can create issues in https://github.com/magenta-aps/l
 
 ### Changelog
 
+**version 1.2.2**
+
+* Add log to checkAccessToken
+
 **version 1.2.1**
 
 * Fix bug that save empty version
