@@ -34,17 +34,19 @@
     <!--Note that the discovery url is added here for some flexibility-->
     <bean id="LOOLService"
           class="dk.magenta.libreoffice.online.service.LOOLServiceImpl" init-method="init">
-        <property name="fileIdAccessTokenMap" ref="lool-fileIdAccessTokenMapSharedCache"/>
+        <property name="tokenMap" ref="lool-fileIdAccessTokenMapSharedCache"/>
         <property name="wopiBaseURL" value="${lool.wopi.url}"/>
         <property name="wopiDiscoveryURL" value="${lool.wopi.url.discovery}"/>
         <property name="alfExternalHost" value="${lool.wopi.alfresco.host}"/>
+        <property name="tokenTtlMs" value="${lool.wopi.token.ttl}"/>
         <property name="nodeService" ref="NodeService"/>
+        <property name="permissionService" ref="PermissionService"/>
         <property name="sysAdminParams" ref="sysAdminParams"/>
     </bean>
 
     <!--A simple service for dealing with token-->
     <bean id="LOOLWPOITokenService" class="dk.magenta.libreoffice.online.service.WOPITokenServiceImpl">
-        <property name="nodeService" ref="nodeService"/>
+        <property name="nodeService" ref="NodeService"/>
         <property name="personService" ref="personService"/>
         <property name="loolService" ref="LOOLService" />
     </bean>

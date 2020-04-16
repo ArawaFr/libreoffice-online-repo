@@ -16,14 +16,10 @@ limitations under the License.
 */
 package dk.magenta.libreoffice.online;
 
-import java.io.IOException;
 import java.io.Serializable;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
-import java.util.Base64;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
@@ -44,6 +40,7 @@ import org.springframework.extensions.webscripts.WebScriptException;
 import org.springframework.extensions.webscripts.WebScriptRequest;
 
 import dk.magenta.libreoffice.online.service.LOOLService;
+import dk.magenta.libreoffice.online.service.WOPIAccessTokenInfo;
 
 public class LOOLCheckFileInfoWebScript extends DeclarativeWebScript implements WOPIConstant {
     private static final Logger logger = LoggerFactory.getLogger(LOOLCheckFileInfoWebScript.class);
@@ -68,10 +65,21 @@ public class LOOLCheckFileInfoWebScript extends DeclarativeWebScript implements 
      * @return
      */
     protected Map<String, Object> executeImpl(WebScriptRequest req, Status status, Cache cache) {
+        final WOPIAccessTokenInfo wopiToken = this.loolService.checkAccessToken(req);
+        final NodeRef nodeRef = this.loolService.getNodeRefForFileId(wopiToken.getFileId());
+
         Map<String, Object> model = new HashMap<>();
         try {
-            final NodeRef nodeRef = loolService.checkAccessToken(req);
-            final Date lastModifiedDate = (Date) nodeService.getProperty(nodeRef, ContentModel.PROP_MODIFIED);
+            Map<QName, Serializable> properties = AuthenticationUtil
+                    .runAs(new AuthenticationUtil.RunAsWork<Map<QName, Serializable>>() {
+                        @Override
+                        public Map<QName, Serializable> doWork() throws Exception {
+                            return nodeService.getProperties(nodeRef);
+                        }
+
+                    }, wopiToken.getUserName());
+
+            final Date lastModifiedDate = (Date) properties.get(ContentModel.PROP_MODIFIED);
             // Convert lastModifiedTime to ISO 8601 according to:
             // https://github.com/LibreOffice/online/blob/master/wsd/Storage.cpp#L460 or
             // look in the
@@ -83,7 +91,7 @@ public class LOOLCheckFileInfoWebScript extends DeclarativeWebScript implements 
 
             // BaseFileName need extension, else Lool load it in read-only mode (since
             // 2.1.4)
-            model.put(BASE_FILE_NAME, (String) nodeService.getProperty(nodeRef, ContentModel.PROP_NAME));
+            model.put(BASE_FILE_NAME, (String) properties.get(ContentModel.PROP_NAME));
             // We need to enable this if we want to be able to insert image into the
             // documents
             model.put(DISABLE_COPY, false);
@@ -93,12 +101,13 @@ public class LOOLCheckFileInfoWebScript extends DeclarativeWebScript implements 
             model.put(HIDE_SAVE_OPTION, false);
             model.put(HIDE_PRINT_OPTION, false);
             model.put(LAST_MODIFIED_TIME, dte);
-            model.put(OWNER_ID, nodeService.getProperty(nodeRef, ContentModel.PROP_CREATOR).toString());
-            model.put(SIZE, getSize(nodeRef));
-            model.put(USER_ID, AuthenticationUtil.getRunAsUser());
+            model.put(OWNER_ID, properties.get(ContentModel.PROP_CREATOR).toString());
+            final ContentData contentData = (ContentData) properties.get(ContentModel.PROP_CONTENT);
+            model.put(SIZE, contentData.getSize());
+            model.put(USER_ID, wopiToken.getUserName());  
             model.put(USER_CAN_WRITE, true);
-            model.put(USER_FRIENDLY_NAME, AuthenticationUtil.getRunAsUser());
-            model.put(VERSION, getDocumentVersion(nodeRef));
+            model.put(USER_FRIENDLY_NAME, wopiToken.getUserName());
+            model.put(VERSION, (String) properties.get(ContentModel.PROP_VERSION_LABEL));
             // Host from which token generation request originated
             model.put(POST_MESSAGE_ORIGIN, loolService.getAlfExternalHost().toString());
             // Search https://www.collaboraoffice.com/category/community-en/ for
@@ -110,56 +119,6 @@ public class LOOLCheckFileInfoWebScript extends DeclarativeWebScript implements 
         return model;
     }
 
-    /**
-     * Returns the size of the file
-     * 
-     * @param nodeRef
-     * @return
-     */
-    public long getSize(NodeRef nodeRef) {
-        final ContentData contentData = (ContentData) nodeService.getProperty(nodeRef, ContentModel.PROP_CONTENT);
-        return contentData.getSize();
-    }
-
-    /**
-     * Previously, it was mandatory that the SHA 256 of the file be returned as part
-     * of the WOPI protocol. It's no longer necessary but we'll leave this here just
-     * in case LOOL requires it in the future
-     * 
-     * @param nodeRef
-     * @return
-     * @throws IOException
-     */
-    protected String getSHAhash(NodeRef nodeRef) throws IOException {
-        final ContentData contentData = (ContentData) nodeService.getProperty(nodeRef, ContentModel.PROP_CONTENT);
-        try {
-            final MessageDigest md = MessageDigest.getInstance("SHA-256");
-            md.update(contentData.getContentUrl().getBytes());
-            byte[] aMessageDigest = md.digest();
-
-            return Base64.getEncoder().encodeToString(aMessageDigest);
-        } catch (NoSuchAlgorithmException nsae) {
-            logger.error("Unable to find encoding algorithm");
-            throw new IOException("Unable to generate a hash for the requested file", nsae);
-        }
-    }
-
-    /**
-     * This gets the version of a document. If the document hasn't been versioned
-     * yet, it adds a versioning aspect to it. Important to note that there are no
-     * checks as to whether the node is a document, hence the node passed to this
-     * method should/must have been sanitized/verified/vetted beforehand.
-     * 
-     * @param nodeRef
-     * @return
-     */
-    public String getDocumentVersion(NodeRef nodeRef) {
-        if (!nodeService.hasAspect(nodeRef, ContentModel.ASPECT_VERSIONABLE)) {
-            Map<QName, Serializable> initialVersionProps = new HashMap<QName, Serializable>(1, 1.0f);
-            versionService.ensureVersioningEnabled(nodeRef, initialVersionProps);
-        }
-        return nodeService.getProperty(nodeRef, ContentModel.PROP_VERSION_LABEL).toString();
-    }
 
     public void setLoolService(LOOLService loolService) {
         this.loolService = loolService;

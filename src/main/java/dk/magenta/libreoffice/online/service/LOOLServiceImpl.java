@@ -1,29 +1,5 @@
 package dk.magenta.libreoffice.online.service;
 
-import org.alfresco.error.AlfrescoRuntimeException;
-import org.alfresco.model.ContentModel;
-import org.alfresco.repo.admin.SysAdminParams;
-import org.alfresco.repo.cache.SimpleCache;
-import org.alfresco.repo.security.authentication.AuthenticationUtil;
-import org.alfresco.service.cmr.repository.ContentData;
-import org.alfresco.service.cmr.repository.NodeRef;
-import org.alfresco.service.cmr.repository.NodeService;
-import org.alfresco.service.cmr.repository.StoreRef;
-import org.apache.commons.io.IOUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.springframework.extensions.webscripts.Status;
-import org.springframework.extensions.webscripts.WebScriptException;
-import org.springframework.extensions.webscripts.WebScriptRequest;
-import org.w3c.dom.Document;
-import org.xml.sax.SAXException;
-
-import javax.xml.parsers.DocumentBuilder;
-import javax.xml.parsers.DocumentBuilderFactory;
-import javax.xml.parsers.ParserConfigurationException;
-import javax.xml.xpath.XPath;
-import javax.xml.xpath.XPathExpressionException;
-import javax.xml.xpath.XPathFactory;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -33,17 +9,42 @@ import java.net.MalformedURLException;
 import java.net.URL;
 import java.security.SecureRandom;
 import java.util.Date;
-import java.util.HashMap;
-import java.util.Map;
+
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.parsers.ParserConfigurationException;
+import javax.xml.xpath.XPath;
+import javax.xml.xpath.XPathExpressionException;
+import javax.xml.xpath.XPathFactory;
+
+import org.alfresco.error.AlfrescoRuntimeException;
+import org.alfresco.model.ContentModel;
+import org.alfresco.repo.admin.SysAdminParams;
+import org.alfresco.repo.cache.SimpleCache;
+import org.alfresco.repo.security.authentication.AuthenticationUtil;
+import org.alfresco.service.cmr.repository.ContentData;
+import org.alfresco.service.cmr.repository.NodeRef;
+import org.alfresco.service.cmr.repository.NodeService;
+import org.alfresco.service.cmr.repository.StoreRef;
+import org.alfresco.service.cmr.security.AccessStatus;
+import org.alfresco.service.cmr.security.PermissionService;
+import org.apache.commons.io.IOUtils;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.springframework.extensions.webscripts.Status;
+import org.springframework.extensions.webscripts.WebScriptException;
+import org.springframework.extensions.webscripts.WebScriptRequest;
+import org.w3c.dom.Document;
+import org.xml.sax.SAXException;
 
 public class LOOLServiceImpl implements LOOLService {
     private static final Log logger = LogFactory.getLog(LOOLServiceImpl.class);
 
     private static final long ONE_HOUR_MS = 1000 * 60 * 60;
 
-    // TODO: Make configurable
-    // 24 hours in milliseconds
-    private static final long TOKEN_TTL_MS = ONE_HOUR_MS * 24;
+    private static final long DEFAULT_TOKEN_TTL_MS = ONE_HOUR_MS * 24;
+    private long tokenTtlMs = -1;
+    
     private static final int DEFAULT_WOPI_PORT = 9980;
 
     private URL wopiBaseURL;
@@ -52,6 +53,7 @@ public class LOOLServiceImpl implements LOOLService {
     private URL wopiDiscoveryURL;
     private WOPILoader wopiLoader;
     private NodeService nodeService;
+    private PermissionService permissionService;
     private SysAdminParams sysAdminParams;
 
     private SecureRandom random = new SecureRandom();
@@ -69,14 +71,18 @@ public class LOOLServiceImpl implements LOOLService {
      * The get(Object key) method returns a clone of original value, modifying the returned value does not change
      * the actual value in the map. One should put modified value back to make changes visible to all nodes.
      */
-    private SimpleCache<String, Map<String, WOPIAccessTokenInfo>> fileIdAccessTokenMap;
+    private SimpleCache<String,WOPIAccessTokenInfo> tokenMap;
 
-    public void setFileIdAccessTokenMap(SimpleCache<String, Map<String, WOPIAccessTokenInfo>> fileIdAccessTokenMap) {
-        this.fileIdAccessTokenMap = fileIdAccessTokenMap;
+    public void setTokenMap(SimpleCache<String, WOPIAccessTokenInfo> tokenMap) {
+        this.tokenMap = tokenMap;
     }
 
     public void setNodeService(NodeService nodeService) {
         this.nodeService = nodeService;
+    }
+    
+    public void setPermissionService(PermissionService permissionService) {
+        this.permissionService = permissionService;
     }
 
     public void setWopiBaseURL(URL wopiBaseURL) {
@@ -90,53 +96,56 @@ public class LOOLServiceImpl implements LOOLService {
     public void setAlfExternalHost(URL alfExternalHost) {
         this.alfExternalHost = alfExternalHost;
     }
+    
+    public void setTokenTtlMs(long tokenTtlMs) {
+        this.tokenTtlMs = tokenTtlMs;
+    }
 
     /**
      * Generate and store an access token only valid for the current user/file id
      * combination.
      *
-     * If an existing access token exists for the user/file id combination, then
-     * extend its expiration date and return it.
+     * We check if we have at least READ permission, so a user must be connected.
      * 
-     * @param fileId
+     * @param nodeRef
      * @return
      */
     @Override
-    public WOPIAccessTokenInfo createAccessToken(String fileId) {
+    public WOPIAccessTokenInfo createAccessToken(NodeRef nodeRef) {
+        if (AuthenticationUtil.isRunAsUserTheSystemUser()) {
+            logger.warn("Create token for System user, it is not desirable");
+        } else {
+            AccessStatus perm = this.permissionService.hasPermission(nodeRef, PermissionService.READ);
+            if (AccessStatus.ALLOWED != perm) {
+                throw new WebScriptException(Status.STATUS_UNAUTHORIZED, "Not allow to READ " + nodeRef);
+            }
+        }
+
         final String userName = AuthenticationUtil.getRunAsUser();
+        final String fileId = nodeRef.getId();
         final Date now = new Date();
-        final Date newExpiresAt = new Date(now.getTime() + TOKEN_TTL_MS);
-        Map<String, WOPIAccessTokenInfo> tokenInfoMap = this.fileIdAccessTokenMap.get(fileId);
-
-        WOPIAccessTokenInfo tokenInfo = null;
-        if (tokenInfoMap != null) {
-            tokenInfo = tokenInfoMap.get(userName);
-            if (tokenInfo != null) {
-                if (tokenInfo.isValid() && tokenInfo.getFileId().equals(fileId)
-                        && tokenInfo.getUserName().equals(userName)) {
-                    // Renew token for a new time-to-live period.
-                    tokenInfo.setExpiresAt(newExpiresAt);
-                } else {
-                    // Expired or not valid -- remove it.
-                    tokenInfoMap.remove(userName);
-                }
-            }
-        }
-        if (tokenInfo == null) {
-            tokenInfo = new WOPIAccessTokenInfo(generateAccessToken(), now, newExpiresAt, fileId, userName);
-            if(tokenInfoMap == null) {
-                tokenInfoMap = new HashMap<>();
-            }
-            tokenInfoMap.put(userName, tokenInfo);
-        }
-
-        // put the tokenInfoMap back to the shared cache, so other servers can see changes
-        this.fileIdAccessTokenMap.put(fileId, tokenInfoMap);
+        WOPIAccessTokenInfo tokenInfo = new WOPIAccessTokenInfo(generateAccessToken(), now, newExpiresAt(now), fileId,
+                userName);
+        this.tokenMap.put(tokenInfo.getAccessToken(), tokenInfo);
 
         if (logger.isDebugEnabled()) {
             logger.debug("Created Access Token for user '" + userName + "' and fileId '" + fileId + "'");
         }
         return tokenInfo;
+    }
+    
+    /**
+     * Compute token time to live
+     * 
+     * @return Now + tokenTtlMs
+     */
+    private Date newExpiresAt(final Date now) {
+        if (this.tokenTtlMs < 1) {
+            this.tokenTtlMs = DEFAULT_TOKEN_TTL_MS;
+        } else if (this.tokenTtlMs < ONE_HOUR_MS) {
+            logger.warn("Token TTL is short : " + this.tokenTtlMs + " ms");
+        }
+        return new Date(now.getTime() + tokenTtlMs);
     }
 
     /**
@@ -144,8 +153,7 @@ public class LOOLServiceImpl implements LOOLService {
      * 
      * @return
      */
-    @Override
-    public String generateAccessToken() {
+    private String generateAccessToken() {
         return new BigInteger(130, random).toString(32);
     }
 
@@ -159,30 +167,19 @@ public class LOOLServiceImpl implements LOOLService {
      */
     @Override
     public WOPIAccessTokenInfo getAccessToken(String accessToken, String fileId) {
-        final Map<String, WOPIAccessTokenInfo> tokenInfoMap = this.fileIdAccessTokenMap.get(fileId);
+        WOPIAccessTokenInfo tokenInfo = this.tokenMap.get(accessToken);
 
-        if (tokenInfoMap == null) {
-            logger.warn("No token access found for " + fileId);
+        if (tokenInfo == null) {
+            logger.warn("No token access found for " + accessToken);
             return null;
         }
 
-        WOPIAccessTokenInfo tokenInfo = null;
-        // Find the token in the map values. Note that we don't know the
-        // username for the token at this point, so we can't just do a
-        // simple key lookup.
-        for (WOPIAccessTokenInfo t : tokenInfoMap.values()) {
-            if (t.getAccessToken().equals(accessToken)) {
-                tokenInfo = t;
-                break;
-            }
+        if (tokenInfo.getFileId().equals(fileId)) {
+            return tokenInfo;
         }
 
-        if (tokenInfo == null) {
-            logger.warn("Tokens exist for " + fileId + ", but not for the given access token");
-        }
-
-        // Found the access token for the given file id.
-        return tokenInfo;
+        logger.warn("Tokens stored for " + accessToken + ", not match the given fileId" + fileId);
+        return null;
     }
 
     /**
@@ -196,7 +193,7 @@ public class LOOLServiceImpl implements LOOLService {
      * @return
      */
     @Override
-    public NodeRef checkAccessToken(WebScriptRequest req) throws WebScriptException {
+    public WOPIAccessTokenInfo checkAccessToken(WebScriptRequest req) throws WebScriptException {
         final String fileId = req.getServiceMatch().getTemplateVars().get(WOPITokenService.FILE_ID);
         
         if (logger.isDebugEnabled()) {
@@ -208,17 +205,24 @@ public class LOOLServiceImpl implements LOOLService {
         }
 
         final String accessToken = req.getParameter(WOPITokenService.ACCESS_TOKEN);
-        final WOPIAccessTokenInfo tokenInfo = getAccessToken(accessToken, fileId);
+        WOPIAccessTokenInfo tokenInfo = getAccessToken(accessToken, fileId);
         // Check access token
         if (accessToken == null || tokenInfo == null) {
             throw new WebScriptException(Status.STATUS_UNAUTHORIZED, "Access token invalid");
         }
+        
         if (!tokenInfo.isValid()) {
-            throw new WebScriptException(Status.STATUS_UNAUTHORIZED, "Access token expired");
+            // try to renew
+            tokenInfo = AuthenticationUtil.runAs(new AuthenticationUtil.RunAsWork<WOPIAccessTokenInfo>() {
+                @Override
+                public WOPIAccessTokenInfo doWork() throws Exception {
+                    return createAccessToken(getNodeRefForFileId(fileId));
+                }
+
+            }, tokenInfo.getUserName());
         }
 
-        AuthenticationUtil.setRunAsUser(tokenInfo.getUserName());
-        return getNodeRefForFileId(fileId);
+        return tokenInfo;
     }
 
     /**
@@ -232,17 +236,6 @@ public class LOOLServiceImpl implements LOOLService {
     public String getWopiSrcURL(NodeRef nodeRef, String action) throws IOException {
         final ContentData contentData = (ContentData) nodeService.getProperty(nodeRef, ContentModel.PROP_CONTENT);
         return wopiLoader.getSrcURL(contentData.getMimetype(), action);
-    }
-
-    /**
-     * Returns the id component of a NodeRef
-     * 
-     * @param nodeRef
-     * @return
-     */
-    @Override
-    public String getFileIdForNodeRef(NodeRef nodeRef) {
-        return nodeRef.getId();
     }
 
     /**

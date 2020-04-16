@@ -50,9 +50,18 @@ This code is released and distributed under the Mozilla Public License 2.0:
 
 Every self-respecting developer should have read link on how to ask smart questions: http://www.catb.org/~esr/faqs/smart-questions.html.
 
-After you've done that you can create issues in https://github.com/magenta-aps/libreoffice-online-repo/issues.
+After you've done that you can create issues in https://github.com/ArawaFr/libreoffice-online-repo/issues.
 
 ### Changelog
+
+**version 1.3.0**
+
+* Simply token cache mecanisme
+* Add ttl to token cache
+* Check Permission "READ" when creating token
+* Try to renew token when outdate (Prevent "Forbidden Error" after long inactivity)
+* Use secure NodeService in LOOLWPOITokenService (force check permission)
+* Permit to configure ttl token for testing
 
 **version 1.2.2**
 
