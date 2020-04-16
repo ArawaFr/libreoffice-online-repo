@@ -16,18 +16,25 @@ limitations under the License.
 */
 package dk.magenta.libreoffice.online;
 
-import dk.magenta.libreoffice.online.service.LOOLService;
-import dk.magenta.libreoffice.online.service.LOOLServiceImpl;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+
 import org.alfresco.model.ContentModel;
-import org.alfresco.service.cmr.repository.*;
+import org.alfresco.repo.security.authentication.AuthenticationUtil;
+import org.alfresco.service.cmr.repository.ContentData;
+import org.alfresco.service.cmr.repository.ContentReader;
+import org.alfresco.service.cmr.repository.ContentService;
+import org.alfresco.service.cmr.repository.NodeRef;
+import org.alfresco.service.cmr.repository.NodeService;
 import org.apache.commons.io.IOUtils;
 import org.springframework.extensions.webscripts.AbstractWebScript;
 import org.springframework.extensions.webscripts.WebScriptRequest;
 import org.springframework.extensions.webscripts.WebScriptResponse;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
+import dk.magenta.libreoffice.online.service.LOOLService;
+import dk.magenta.libreoffice.online.service.LOOLServiceImpl;
+import dk.magenta.libreoffice.online.service.WOPIAccessTokenInfo;
 
 public class LOOLGetFileWebScript extends AbstractWebScript {
     private LOOLService loolService;
@@ -36,7 +43,10 @@ public class LOOLGetFileWebScript extends AbstractWebScript {
 
     @Override
     public void execute(WebScriptRequest req, WebScriptResponse res) throws IOException {
-        final NodeRef nodeRef = loolService.checkAccessToken(req);
+        final WOPIAccessTokenInfo wopiToken = loolService.checkAccessToken(req);
+        final NodeRef nodeRef = loolService.getNodeRefForFileId(wopiToken.getFileId());
+        AuthenticationUtil.setRunAsUser(wopiToken.getUserName());
+
         final ContentData contentProp = (ContentData) nodeService.getProperty(nodeRef, ContentModel.PROP_CONTENT);
         res.setContentType(contentProp.getMimetype());
         res.setContentEncoding(contentProp.getEncoding());

@@ -47,8 +47,7 @@ public class LOOLGetTokenWebScript extends DeclarativeWebScript {
             throw new WebScriptException("No 'action' parameter supplied");
         }
 
-        final String fileIdForNodeRef = loolService.getFileIdForNodeRef(nodeRef);
-        final WOPIAccessTokenInfo tokenInfo = loolService.createAccessToken(fileIdForNodeRef);
+        final WOPIAccessTokenInfo tokenInfo = loolService.createAccessToken(nodeRef);
 
         try {
             String wopiSrcUrl = loolService.getWopiSrcURL(nodeRef, action);
